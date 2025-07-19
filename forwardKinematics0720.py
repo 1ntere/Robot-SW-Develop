@@ -1,17 +1,21 @@
+import sys
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider
-from mpl_toolkits.mplot3d import Axes3D
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QSlider, QPushButton
+)
+from PyQt5.QtCore import Qt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
 
-# UR5 DH Parameters (Standard DH)
-a = np.array([0, -0.425, -0.392, 0, 0, 0])                 # a_i
-d = np.array([0.089, 0, 0, 0.109, 0.095, 0.082])           # d_i
-alpha = np.array([np.pi/2, 0, 0, np.pi/2, -np.pi/2, 0])    # alpha_i
-theta_default = np.zeros(6)                                # initial joint angles
+# UR5 DH Parameters
+a = np.array([0, -0.425, -0.392, 0, 0, 0])
+d = np.array([0.089, 0, 0, 0.109, 0.095, 0.082])
+alpha = np.array([np.pi/2, 0, 0, np.pi/2, -np.pi/2, 0])
+theta_default = np.zeros(6)
 
 # DH 변환 행렬 함수
 def dh_transform(theta, d, a, alpha):
-    """DH 파라미터로 변환 행렬 생성"""
     return np.array([
         [np.cos(theta), -np.sin(theta)*np.cos(alpha),  np.sin(theta)*np.sin(alpha), a*np.cos(theta)],
         [np.sin(theta),  np.cos(theta)*np.cos(alpha), -np.cos(theta)*np.sin(alpha), a*np.sin(theta)],
@@ -19,65 +23,81 @@ def dh_transform(theta, d, a, alpha):
         [0,              0,                            0,                           1]
     ])
 
-# Forward Kinematics 계산 함수
+# Forward Kinematics 계산
 def forward_kinematics(theta_list, a, d, alpha):
-    """Joint 각도를 받아 End-effector 위치 계산"""
     T = np.eye(4)
-    positions = [T[:3, 3]]  # 시작점 (base)
-
+    positions = [T[:3, 3]]
     for i in range(6):
         T_i = dh_transform(np.deg2rad(theta_list[i]), d[i], a[i], alpha[i])
         T = T @ T_i
-        positions.append(T[:3, 3])  # 각 관절 위치 저장
-
+        positions.append(T[:3, 3])
     return np.array(positions)
 
-# 로봇팔 그리기
-def plot_robot(positions, ax):
-    ax.clear()
-    ax.plot(positions[:, 0], positions[:, 1], positions[:, 2], '-o', linewidth=3, markersize=6, color='blue')
-    ax.set_xlim(-1, 1)
-    ax.set_ylim(-1, 1)
-    ax.set_zlim(0, 1.5)
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
-    ax.set_title('UR5 Forward Kinematics')
-    ax.grid(True)
+# PyQt5 시뮬레이터 GUI 클래스
+class UR5Simulator(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("UR5 Forward Kinematics Simulator")
+        self.setGeometry(100, 100, 1000, 800)
 
-# 시뮬레이터 실행
-def run_simulator():
-    # 초기 설정
-    fig = plt.figure(figsize=(8, 8))
-    ax = fig.add_subplot(111, projection='3d')
-    plt.subplots_adjust(left=0.2, bottom=0.4)
+        self.a = a
+        self.d = d
+        self.alpha = alpha
+        self.theta = theta_default.copy()
 
-    theta = theta_default.copy()
-    positions = forward_kinematics(theta, a, d, alpha)
-    plot_robot(positions, ax)
+        self.main_layout = QVBoxLayout()
+        self.setLayout(self.main_layout)
 
-    # 슬라이더 설정
-    sliders = []
-    axcolor = 'lightgoldenrodyellow'
+        # Matplotlib Figure
+        self.figure = Figure()
+        self.canvas = FigureCanvas(self.figure)
+        self.ax = self.figure.add_subplot(111, projection='3d')
+        self.main_layout.addWidget(self.canvas)
 
-    for i in range(6):
-        ax_slider = plt.axes([0.2, 0.05 + i*0.05, 0.65, 0.03], facecolor=axcolor)
-        slider = Slider(ax_slider, f'θ{i+1} (deg)', -180, 180, valinit=theta[i])
-        sliders.append(slider)
+        # 슬라이더 UI
+        self.sliders = []
+        for i in range(6):
+            row = QHBoxLayout()
+            label = QLabel(f"θ{i+1}")
+            slider = QSlider(Qt.Horizontal)
+            slider.setRange(-180, 180)
+            slider.setValue(0)
+            slider.valueChanged.connect(self.update_plot)
+            row.addWidget(label)
+            row.addWidget(slider)
+            self.main_layout.addLayout(row)
+            self.sliders.append(slider)
 
-    # 업데이트 함수
-    def update(val):
-        theta_vals = [s.val for s in sliders]
-        positions = forward_kinematics(theta_vals, a, d, alpha)
-        plot_robot(positions, ax)
-        fig.canvas.draw_idle()
+        # 스냅샷 저장 버튼
+        self.snapshot_btn = QPushButton("📸 스냅샷 저장")
+        self.snapshot_btn.clicked.connect(self.save_snapshot)
+        self.main_layout.addWidget(self.snapshot_btn)
 
-    # 슬라이더 이벤트 연결
-    for s in sliders:
-        s.on_changed(update)
+        self.update_plot()
 
-    plt.show()
+    def update_plot(self):
+        self.theta = np.array([s.value() for s in self.sliders])
+        positions = forward_kinematics(self.theta, self.a, self.d, self.alpha)
+
+        self.ax.clear()
+        self.ax.plot(positions[:, 0], positions[:, 1], positions[:, 2], '-o', color='blue', linewidth=3)
+        self.ax.set_xlim(-1, 1)
+        self.ax.set_ylim(-1, 1)
+        self.ax.set_zlim(0, 1.5)
+        self.ax.set_xlabel("X")
+        self.ax.set_ylabel("Y")
+        self.ax.set_zlabel("Z")
+        self.ax.set_title("UR5 Forward Kinematics")
+
+        self.canvas.draw()
+
+    def save_snapshot(self):
+        self.figure.savefig("ur5_gui_snapshot.png")
+        print("✅ 스냅샷 저장 완료: ur5_gui_snapshot.png")
 
 # 실행
-if __name__ == '__main__':
-    run_simulator()
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = UR5Simulator()
+    window.show()
+    sys.exit(app.exec_())
